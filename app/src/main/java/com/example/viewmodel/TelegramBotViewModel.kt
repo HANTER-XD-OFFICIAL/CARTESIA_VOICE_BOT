@@ -34,6 +34,7 @@ data class BotUiState(
     val showVoiceCloningDialog: Boolean = false,
     val showVoiceSelectorDialog: Boolean = false,
     val showLanguageSelectorDialog: Boolean = false,
+    val showApiKeyDialog: Boolean = false,
     val errorMessage: String? = null
 )
 
@@ -113,7 +114,11 @@ class TelegramBotViewModel(application: Application) : AndroidViewModel(applicat
                 _uiState.update { it.copy(showVoiceSelectorDialog = true) }
             }
             ButtonAction.FEATURE_SETTINGS -> {
-                sendVoiceSettingsMessage()
+                if (button.id == "cfg_key") {
+                    _uiState.update { it.copy(showApiKeyDialog = true) }
+                } else {
+                    sendVoiceSettingsMessage()
+                }
             }
             ButtonAction.FEATURE_HELP -> {
                 sendHelpMessage()
@@ -426,7 +431,8 @@ class TelegramBotViewModel(application: Application) : AndroidViewModel(applicat
             inlineButtons = listOf(
                 InlineButton("cfg_voice", "🎭 Change Voice", ButtonAction.FEATURE_SELECT_VOICE),
                 InlineButton("cfg_lang", "🌐 Change Language", ButtonAction.ACTION_SWITCH_LANGUAGE),
-                InlineButton("cfg_clone", "🧬 Clone New Voice", ButtonAction.FEATURE_VOICE_CLONING)
+                InlineButton("cfg_clone", "🧬 Clone New Voice", ButtonAction.FEATURE_VOICE_CLONING),
+                InlineButton("cfg_key", "🔑 Set API Key", ButtonAction.FEATURE_SETTINGS)
             )
         )
     }
@@ -467,6 +473,25 @@ class TelegramBotViewModel(application: Application) : AndroidViewModel(applicat
 
     fun openVoiceCloning() {
         _uiState.update { it.copy(showVoiceCloningDialog = true) }
+    }
+
+    fun openApiKeyDialog() {
+        _uiState.update { it.copy(showApiKeyDialog = true) }
+    }
+
+    fun dismissApiKeyDialog() {
+        _uiState.update { it.copy(showApiKeyDialog = false) }
+    }
+
+    fun getApiKey(): String = apiClient.apiKey
+
+    fun updateApiKey(newKey: String) {
+        apiClient.updateApiKey(newKey)
+        sendBotMessage(
+            text = "🔑 **API Key updated successfully!**\n\n" +
+                    "Active Key: `sk_car_...${apiClient.apiKey.takeLast(4)}`\n" +
+                    "Your new key is active for all subsequent voice generations and cloning requests."
+        )
     }
 
     fun resetConversation() {

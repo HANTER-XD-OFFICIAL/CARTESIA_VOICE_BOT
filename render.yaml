@@ -1,13 +1,10 @@
 services:
   - type: worker
-    name: cartesia-voice-telegram-bot
-    runtime: python
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: python bot.py
+    name: cartesia-voice-telegram-bot-kotlin
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: CARTESIA_API_KEY
         value: sk_car_x62gquQgEdVchAVtPCxcue
-      - key: PYTHONUNBUFFERED
-        value: "1"

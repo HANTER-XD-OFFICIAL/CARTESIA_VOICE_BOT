@@ -6,4 +6,5 @@ plugins {
   alias(libs.plugins.roborazzi) apply false
   alias(libs.plugins.secrets) apply false
   alias(libs.plugins.google.services) apply false
+  kotlin("jvm") version "2.1.10" apply false
 }

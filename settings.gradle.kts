@@ -25,3 +25,4 @@ dependencyResolutionManagement {
 rootProject.name = "Cartesia Voice Bot"
 
 include(":app")
+include(":telegram-bot-kotlin")

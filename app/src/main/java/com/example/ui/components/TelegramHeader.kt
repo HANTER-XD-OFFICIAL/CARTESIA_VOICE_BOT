@@ -65,6 +65,7 @@ fun TelegramHeader(
     onVoiceClick: () -> Unit,
     onCloneClick: () -> Unit,
     onResetClick: () -> Unit,
+    onSettingsClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var showMenu by remember { mutableStateOf(false) }
@@ -251,6 +252,13 @@ fun TelegramHeader(
                         onClick = {
                             showMenu = false
                             onCloneClick()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("🔑 API Key Settings") },
+                        onClick = {
+                            showMenu = false
+                            onSettingsClick()
                         }
                     )
                     DropdownMenuItem(

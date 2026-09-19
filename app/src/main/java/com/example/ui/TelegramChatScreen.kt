@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.ButtonAction
 import com.example.data.model.InlineButton
+import com.example.ui.components.ApiKeyDialog
 import com.example.ui.components.ChatInputField
 import com.example.ui.components.ChatMessageItem
 import com.example.ui.components.LanguageSelectorDialog
@@ -88,7 +89,8 @@ fun TelegramChatScreen(
                 onLanguageClick = { viewModel.openLanguageSelector() },
                 onVoiceClick = { viewModel.openVoiceSelector() },
                 onCloneClick = { viewModel.openVoiceCloning() },
-                onResetClick = { viewModel.resetConversation() }
+                onResetClick = { viewModel.resetConversation() },
+                onSettingsClick = { viewModel.openApiKeyDialog() }
             )
         },
         bottomBar = {
@@ -187,6 +189,14 @@ fun TelegramChatScreen(
             selectedLanguage = uiState.selectedLanguage,
             onSelectLanguage = { viewModel.selectLanguage(it) },
             onDismiss = { viewModel.dismissLanguageSelectorDialog() }
+        )
+    }
+
+    if (uiState.showApiKeyDialog) {
+        ApiKeyDialog(
+            currentApiKey = viewModel.getApiKey(),
+            onSaveKey = { viewModel.updateApiKey(it) },
+            onDismiss = { viewModel.dismissApiKeyDialog() }
         )
     }
 }
