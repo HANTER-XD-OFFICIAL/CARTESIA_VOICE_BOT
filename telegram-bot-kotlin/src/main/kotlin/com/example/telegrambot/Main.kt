@@ -9,7 +9,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.slf4j.LoggerFactory
 import java.io.File
-import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -19,13 +18,91 @@ import java.util.concurrent.TimeUnit
 
 val logger = LoggerFactory.getLogger("KotlinTelegramBot")
 
-// ---------------- Data Models ----------------
+// ---------------- Data Models & Persistence ----------------
+data class ClonedVoiceProfile(
+    val id: String,
+    var name: String,
+    val language: String,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
 data class UserBotSession(
     var language: String = "en",
     var voiceId: String = "a0e99841-438c-4a64-b679-ae501e7d6091",
     var voiceName: String = "Barbershop Man 🎙️",
-    var awaitingClone: Boolean = false
+    var awaitingCloneAudio: Boolean = false,
+    var pendingAudioBytes: ByteArray? = null,
+    var isBlocked: Boolean = false,
+    val savedVoices: MutableList<ClonedVoiceProfile> = mutableListOf()
 )
+
+object VoiceStorage {
+    private val storageFile = File("user_voice_profiles.json")
+
+    fun loadSessions(targetMap: ConcurrentHashMap<Long, UserBotSession>) {
+        if (!storageFile.exists()) return
+        try {
+            val content = storageFile.readText()
+            val root = JSONObject(content)
+            for (key in root.keySet()) {
+                val userId = key.toLongOrNull() ?: continue
+                val uObj = root.getJSONObject(key)
+                val session = UserBotSession(
+                    language = uObj.optString("language", "en"),
+                    voiceId = uObj.optString("voiceId", "a0e99841-438c-4a64-b679-ae501e7d6091"),
+                    voiceName = uObj.optString("voiceName", "Barbershop Man 🎙️"),
+                    isBlocked = uObj.optBoolean("isBlocked", false)
+                )
+                val voicesArr = uObj.optJSONArray("savedVoices")
+                if (voicesArr != null) {
+                    for (i in 0 until voicesArr.length()) {
+                        val v = voicesArr.getJSONObject(i)
+                        session.savedVoices.add(
+                            ClonedVoiceProfile(
+                                id = v.getString("id"),
+                                name = v.getString("name"),
+                                language = v.optString("language", "en"),
+                                createdAt = v.optLong("createdAt", System.currentTimeMillis())
+                            )
+                        )
+                    }
+                }
+                targetMap[userId] = session
+            }
+            logger.info("Loaded ${targetMap.size} user sessions from disk storage.")
+        } catch (e: Exception) {
+            logger.error("Failed to read user voice profiles storage: ${e.message}")
+        }
+    }
+
+    fun saveSessions(sourceMap: ConcurrentHashMap<Long, UserBotSession>) {
+        try {
+            val root = JSONObject()
+            for ((userId, session) in sourceMap) {
+                val uObj = JSONObject().apply {
+                    put("language", session.language)
+                    put("voiceId", session.voiceId)
+                    put("voiceName", session.voiceName)
+                    put("isBlocked", session.isBlocked)
+                    val arr = JSONArray()
+                    for (v in session.savedVoices) {
+                        arr.put(JSONObject().apply {
+                            put("id", v.id)
+                            put("name", v.name)
+                            put("language", v.language)
+                            put("createdAt", v.createdAt)
+                        })
+                    }
+                    put("savedVoices", arr)
+                }
+                root.put(userId.toString(), uObj)
+            }
+            storageFile.writeText(root.toString(2))
+        } catch (e: Exception) {
+            logger.error("Failed to save user voice profiles: ${e.message}")
+        }
+    }
+}
 
 object Config {
     val TELEGRAM_TOKEN: String = SecretVault.resolveTelegramToken().ifBlank {
@@ -42,6 +119,25 @@ object Config {
     const val CARTESIA_TTS_URL = "https://api.cartesia.ai/tts/bytes"
     const val CARTESIA_CLONE_URL = "https://api.cartesia.ai/voices/clone"
     const val CARTESIA_VERSION = "2024-06-10"
+
+    // Supported Global Languages with Flags and Names
+    val SUPPORTED_LANGUAGES = listOf(
+        Triple("bn", "বাংলা 🇧🇩", "Bengali"),
+        Triple("en", "English 🇺🇸", "English"),
+        Triple("hi", "हिन्दी 🇮🇳", "Hindi"),
+        Triple("ar", "العربية 🇸🇦", "Arabic"),
+        Triple("es", "Español 🇪🇸", "Spanish"),
+        Triple("fr", "Français 🇫🇷", "French"),
+        Triple("de", "Deutsch 🇩🇪", "German"),
+        Triple("ja", "日本語 🇯🇵", "Japanese"),
+        Triple("pt", "Português 🇧🇷", "Portuguese"),
+        Triple("zh", "中文 🇨🇳", "Chinese"),
+        Triple("ru", "Русский 🇷🇺", "Russian"),
+        Triple("tr", "Türkçe 🇹🇷", "Turkish"),
+        Triple("ko", "한국어 🇰🇷", "Korean"),
+        Triple("it", "Italiano 🇮🇹", "Italian"),
+        Triple("ur", "اردو 🇵🇰", "Urdu")
+    )
 }
 
 val userSessions = ConcurrentHashMap<Long, UserBotSession>()
@@ -62,6 +158,8 @@ fun main() = runBlocking {
     logger.info("🤖 Starting 100% Kotlin Telegram Bot...")
     logger.info("=========================================")
 
+    VoiceStorage.loadSessions(userSessions)
+
     if (Config.TELEGRAM_TOKEN.isBlank()) {
         System.err.println("FATAL: TELEGRAM_BOT_TOKEN environment variable is required.")
         System.err.println("Please set TELEGRAM_BOT_TOKEN in your environment or in Render.")
@@ -72,7 +170,6 @@ fun main() = runBlocking {
     val me = botService.getMe()
     logger.info("✅ Connected to Telegram as: @${me.optString("username", "UnknownBot")}")
 
-    // Long polling loop
     var offset: Long = 0
     while (isActive) {
         try {
@@ -118,59 +215,132 @@ suspend fun handleCallbackQuery(bot: TelegramBotService, callback: JSONObject) {
     bot.answerCallbackQuery(callbackId)
     val session = getUserSession(userId)
 
+    if (session.isBlocked) {
+        bot.editMessageText(chatId, messageId, "⛔ *Your access has been suspended by the administrator.*")
+        return
+    }
+
     when {
+        // Change Active Language
         data.startsWith("lang_") -> {
             val code = data.removePrefix("lang_")
             session.language = code
-            val langLabel = when (code) {
-                "en" -> "English 🇺🇸"
-                "es" -> "Spanish 🇪🇸"
-                "fr" -> "French 🇫🇷"
-                "de" -> "German 🇩🇪"
-                "ja" -> "Japanese 🇯🇵"
-                "pt" -> "Portuguese 🇧🇷"
-                "zh" -> "Chinese 🇨🇳"
-                else -> code.uppercase()
+            val langObj = Config.SUPPORTED_LANGUAGES.find { it.first == code }
+            val label = langObj?.second ?: code.uppercase()
+            VoiceStorage.saveSessions(userSessions)
+
+            val text = "✅ *Language set to: $label*\n\n" +
+                    "Now send any text message in this language to generate realistic speech, or select an option below:"
+            bot.editMessageText(chatId, messageId, text, createMainMenuKeyboard(session))
+        }
+
+        // Language selected during Voice Cloning flow
+        data.startsWith("clonelang_") -> {
+            val selectedLang = data.removePrefix("clonelang_")
+            val audioBytes = session.pendingAudioBytes
+            if (audioBytes == null || audioBytes.isEmpty()) {
+                bot.editMessageText(chatId, messageId, "⚠️ *No recorded audio found!* Please record your 10-15s voice clip again.", createMainMenuKeyboard(session))
+                return
             }
-            val text = "✅ *Language set to: $langLabel*\n\n" +
-                    "Send me any text message to generate speech, or use the menu below:"
-            bot.editMessageText(chatId, messageId, text, createMainMenuKeyboard())
+
+            val langObj = Config.SUPPORTED_LANGUAGES.find { it.first == selectedLang }
+            val langLabel = langObj?.second ?: selectedLang.uppercase()
+            val userName = from.optString("first_name", "User")
+            val newProfileName = "$userName's Voice ($langLabel)"
+
+            bot.editMessageText(chatId, messageId, "⏳ *Cartesia AI is creating your Voice Profile for $langLabel...*")
+
+            try {
+                val clonedVoiceId = cloneCartesiaVoice(audioBytes, newProfileName, selectedLang)
+                val newProfile = ClonedVoiceProfile(
+                    id = clonedVoiceId,
+                    name = newProfileName,
+                    language = selectedLang
+                )
+                session.savedVoices.add(newProfile)
+                session.voiceId = clonedVoiceId
+                session.voiceName = newProfileName
+                session.language = selectedLang
+                session.pendingAudioBytes = null
+                session.awaitingCloneAudio = false
+                VoiceStorage.saveSessions(userSessions)
+
+                val successText = "🎉 *Voice Profile Created & Saved!*\n\n" +
+                        "• *Voice Name:* `$newProfileName`\n" +
+                        "• *Language:* $langLabel\n" +
+                        "• *Voice ID:* `${clonedVoiceId}`\n\n" +
+                        "💾 This voice is permanently saved to your profile.\n" +
+                        "Send any text now to generate realistic speech in your own voice!"
+
+                bot.editMessageText(chatId, messageId, successText, createMainMenuKeyboard(session))
+            } catch (e: Exception) {
+                logger.error("Error creating clone profile", e)
+                bot.editMessageText(chatId, messageId, "❌ Failed to create cloned voice: ${e.message}", createMainMenuKeyboard(session))
+            }
         }
+
         data == "menu_main" -> {
-            val text = "🎛️ *Main Menu:*\nSelect an option or send any text to convert to voice:"
-            bot.editMessageText(chatId, messageId, text, createMainMenuKeyboard())
+            val text = "🎛️ *Main Dashboard:*\nSelect an option or send any text to convert to voice:"
+            bot.editMessageText(chatId, messageId, text, createMainMenuKeyboard(session))
         }
+
         data == "menu_lang" -> {
-            val text = "🌐 *Select your preferred language:*"
-            bot.editMessageText(chatId, messageId, text, createLanguageKeyboard())
+            val text = "🌐 *Select your preferred TTS Language:*\n(Supports Bengali, Hindi, English, Arabic, and more)"
+            bot.editMessageText(chatId, messageId, text, createLanguageKeyboard("lang_"))
         }
+
         data == "menu_voices" -> {
-            val text = "🎙️ *Choose an expressive Cartesia voice:*"
-            bot.editMessageText(chatId, messageId, text, createVoiceSelectionKeyboard())
+            val text = "🎙️ *Choose an Active Voice:*\nSelect from Cartesia studio presets or your own saved voice profiles:"
+            bot.editMessageText(chatId, messageId, text, createVoiceSelectionKeyboard(session))
         }
+
+        data == "menu_my_voices" -> {
+            val text = "🧬 *My Saved Voice Profiles (${session.savedVoices.size}):*\n" +
+                    "Manage or switch between your personal cloned voices:"
+            bot.editMessageText(chatId, messageId, text, createMyVoicesKeyboard(session))
+        }
+
         data.startsWith("voice_") -> {
             val parts = data.split(":")
             if (parts.size >= 3) {
                 session.voiceId = parts[1]
                 session.voiceName = parts[2]
+                VoiceStorage.saveSessions(userSessions)
             }
-            val text = "✅ *Active Voice:* ${session.voiceName}\n\nNow send any text message and I will speak it for you!"
-            bot.editMessageText(chatId, messageId, text, createMainMenuKeyboard())
+            val text = "✅ *Active Voice:* ${session.voiceName}\n\n💬 Send any text message now and I will speak it for you!"
+            bot.editMessageText(chatId, messageId, text, createMainMenuKeyboard(session))
         }
+
+        data.startsWith("delvoice_") -> {
+            val idToDelete = data.removePrefix("delvoice_")
+            val removed = session.savedVoices.removeAll { it.id == idToDelete }
+            if (session.voiceId == idToDelete) {
+                session.voiceId = "a0e99841-438c-4a64-b679-ae501e7d6091"
+                session.voiceName = "Barbershop Man 🎙️"
+            }
+            VoiceStorage.saveSessions(userSessions)
+            val msg = if (removed) "🗑️ Voice profile deleted successfully!" else "Voice profile not found."
+            bot.editMessageText(chatId, messageId, "$msg\n\nActive voice reset to: ${session.voiceName}", createMainMenuKeyboard(session))
+        }
+
         data == "menu_status" -> {
-            val text = "⚙️ *Active Configuration:*\n\n" +
-                    "🌐 *Language:* ${session.language.uppercase()}\n" +
-                    "🎙️ *Voice:* ${session.voiceName}\n" +
-                    "🔑 *Voice ID:* `${session.voiceId}`\n\n" +
+            val currentLang = Config.SUPPORTED_LANGUAGES.find { it.first == session.language }?.second ?: session.language.uppercase()
+            val text = "⚙️ *Active Configuration & Profile:*\n\n" +
+                    "🌐 *Language:* $currentLang\n" +
+                    "🎙️ *Active Voice:* ${session.voiceName}\n" +
+                    "🔑 *Voice ID:* `${session.voiceId}`\n" +
+                    "🧬 *Saved Profiles:* ${session.savedVoices.size}\n\n" +
                     "💬 _Send any text message to generate voice note!_"
-            bot.editMessageText(chatId, messageId, text, createMainMenuKeyboard())
+            bot.editMessageText(chatId, messageId, text, createMainMenuKeyboard(session))
         }
+
         data == "menu_clone" -> {
-            session.awaitingClone = true
-            val text = "🧬 *Voice Cloning Mode:*\n\n" +
-                    "1. Record a voice message (5-15 seconds) or upload an audio file.\n" +
-                    "2. Send it to this chat.\n" +
-                    "3. Cartesia AI will clone your voice and set it as active!"
+            session.awaitingCloneAudio = true
+            val text = "🧬 *Instant Voice Cloning:*\n\n" +
+                    "1️⃣ *Step 1:* Record a voice message (10-20 seconds) or upload an audio clip.\n" +
+                    "2️⃣ *Step 2:* You will choose which language (Bangla, English, Hindi, etc.) to link to this voice.\n" +
+                    "3️⃣ *Step 3:* Cartesia Sonic will clone and save it to your permanent profile!\n\n" +
+                    "👇 _Send your voice message now:_"
             bot.editMessageText(chatId, messageId, text, createCancelKeyboard())
         }
     }
@@ -182,7 +352,45 @@ suspend fun handleMessage(bot: TelegramBotService, message: JSONObject) {
     val chatId = message.getJSONObject("chat").getLong("id")
     val session = getUserSession(userId)
 
-    // Handle voice/audio clip for cloning
+    if (session.isBlocked) {
+        bot.sendMessage(chatId, "⛔ *Your access has been suspended by the administrator.*")
+        return
+    }
+
+    // Admin commands for managing users: /block <userId>, /unblock <userId>, /clearvoices <userId>
+    val textCmd = message.optString("text", "").trim()
+    if (textCmd.startsWith("/admin_block ")) {
+        val targetId = textCmd.removePrefix("/admin_block ").trim().toLongOrNull()
+        if (targetId != null) {
+            val targetSession = getUserSession(targetId)
+            targetSession.isBlocked = true
+            VoiceStorage.saveSessions(userSessions)
+            bot.sendMessage(chatId, "✅ User `$targetId` has been blocked from the bot.")
+            return
+        }
+    } else if (textCmd.startsWith("/admin_unblock ")) {
+        val targetId = textCmd.removePrefix("/admin_unblock ").trim().toLongOrNull()
+        if (targetId != null) {
+            val targetSession = getUserSession(targetId)
+            targetSession.isBlocked = false
+            VoiceStorage.saveSessions(userSessions)
+            bot.sendMessage(chatId, "✅ User `$targetId` has been unblocked.")
+            return
+        }
+    } else if (textCmd.startsWith("/admin_clearvoices ")) {
+        val targetId = textCmd.removePrefix("/admin_clearvoices ").trim().toLongOrNull()
+        if (targetId != null) {
+            val targetSession = getUserSession(targetId)
+            targetSession.savedVoices.clear()
+            targetSession.voiceId = "a0e99841-438c-4a64-b679-ae501e7d6091"
+            targetSession.voiceName = "Barbershop Man 🎙️"
+            VoiceStorage.saveSessions(userSessions)
+            bot.sendMessage(chatId, "✅ Cleared all cloned voice profiles for user `$targetId`.")
+            return
+        }
+    }
+
+    // Handle voice/audio clip for voice cloning
     if (message.has("voice") || message.has("audio")) {
         val fileId = if (message.has("voice")) {
             message.getJSONObject("voice").getString("file_id")
@@ -191,82 +399,73 @@ suspend fun handleMessage(bot: TelegramBotService, message: JSONObject) {
         }
 
         bot.sendChatAction(chatId, "typing")
-        val statusMsg = bot.sendMessage(chatId, "📥 *Downloading voice note for Cartesia Voice Cloning...*")
+        val statusMsg = bot.sendMessage(chatId, "📥 *Audio received! Downloading voice clip...*")
         val statusMsgId = statusMsg.optInt("message_id")
 
         try {
-            val userName = from.optString("first_name", "User")
-            val clonedVoiceName = "🧬 $userName's Voice"
-
-            // 1. Download file bytes from Telegram
             val audioBytes = bot.downloadFile(fileId)
-            logger.info("Downloaded ${audioBytes.size} bytes of voice clip from Telegram for user $userName")
-
-            // 2. Call Cartesia's actual Voice Cloning API
-            val clonedVoiceId = cloneCartesiaVoice(audioBytes, "$userName Voice", session.language)
-            logger.info("Successfully cloned voice via Cartesia! ID: $clonedVoiceId")
-
-            session.voiceId = clonedVoiceId
-            session.voiceName = clonedVoiceName
-            session.awaitingClone = false
+            session.pendingAudioBytes = audioBytes
+            session.awaitingCloneAudio = false
 
             if (statusMsgId != 0) {
                 bot.editMessageText(
                     chatId,
                     statusMsgId,
-                    "🎉 *Voice Cloned Successfully with Cartesia AI!*\n\n" +
-                            "• *Voice Name:* $clonedVoiceName\n" +
-                            "• *Voice ID:* `$clonedVoiceId`\n\n" +
-                            "Your cloned voice is now active. Send any text message to hear it speak with your voice!",
-                    createMainMenuKeyboard()
+                    "🎯 *Voice Clip Downloaded (${audioBytes.size / 1024} KB)!*\n\n" +
+                            "Now please select the *Language* you spoke in this recording:",
+                    createLanguageKeyboard("clonelang_")
                 )
             }
         } catch (e: Exception) {
-            logger.error("Error in cloning voice via Cartesia", e)
+            logger.error("Error downloading voice clip", e)
             if (statusMsgId != 0) {
-                bot.editMessageText(chatId, statusMsgId, "❌ Failed to clone voice with Cartesia: ${e.message}")
+                bot.editMessageText(chatId, statusMsgId, "❌ Failed to download audio: ${e.message}")
             }
         }
         return
     }
 
-    // Handle text messages
-    val text = message.optString("text", "").trim()
-    if (text.isBlank()) return
+    if (textCmd.isBlank()) return
 
-    if (text == "/start" || text == "/menu") {
+    if (textCmd == "/start" || textCmd == "/menu") {
         val userName = from.optString("first_name", "there")
         val welcome = "👋 *Hello $userName!*\n\n" +
-                "Welcome to the *Cartesia Voice Telegram Bot* (Built in 100% Kotlin)! 🎙️⚡\n\n" +
-                "I convert your text messages into realistic speech using Cartesia Sonic AI.\n\n" +
-                "👉 *Step 1:* Please select your language to begin:"
-        bot.sendMessage(chatId, welcome, createLanguageKeyboard())
+                "Welcome to the *Cartesia AI Voice Studio & Telegram Bot*! 🎙️⚡\n\n" +
+                "• Convert any text into realistic human speech\n" +
+                "• Clone your own voice from a 10-15s voice note\n" +
+                "• Save and switch between your personal voice profiles anytime\n" +
+                "• Supports Bengali, Hindi, English, Arabic, and more global languages\n\n" +
+                "👉 *Select your preferred language or use the menu below:*"
+        bot.sendMessage(chatId, welcome, createMainMenuKeyboard(session))
         return
     }
 
-    if (text == "/help") {
+    if (textCmd == "/help") {
         val help = "ℹ️ *Cartesia Voice Bot Commands:*\n\n" +
-                "/start - Restart and pick language\n" +
-                "/menu - Open settings and voice options\n\n" +
-                "Send any text to immediately receive an audio voice message!"
-        bot.sendMessage(chatId, help, createMainMenuKeyboard())
+                "/menu - Open settings and voice options\n" +
+                "/start - Restart and display greeting\n\n" +
+                "🧬 *To Clone Your Voice:* Just send a 10-15s voice message directly here!\n\n" +
+                "💬 *To Generate Speech:* Simply send any text message!"
+        bot.sendMessage(chatId, help, createMainMenuKeyboard(session))
         return
     }
 
     // Process Text-to-Speech
     bot.sendChatAction(chatId, "record_voice")
-    val statusMsg = bot.sendMessage(chatId, "🔊 _Synthesizing voice with Cartesia Sonic..._")
+    val statusMsg = bot.sendMessage(chatId, "🔊 _Synthesizing speech with Cartesia Sonic..._")
     val statusMsgId = statusMsg.optInt("message_id")
 
     try {
-        val audioBytes = generateCartesiaSpeech(text, session.voiceId, session.language)
+        val audioBytes = generateCartesiaSpeech(textCmd, session.voiceId, session.language)
 
         if (statusMsgId != 0) {
             bot.deleteMessage(chatId, statusMsgId)
         }
 
-        val caption = "🎙️ *Voice:* ${session.voiceName} (${session.language.uppercase()})"
-        bot.sendVoice(chatId, audioBytes, caption, createMainMenuKeyboard())
+        val langObj = Config.SUPPORTED_LANGUAGES.find { it.first == session.language }
+        val langLabel = langObj?.second ?: session.language.uppercase()
+        val caption = "🎙️ *Voice:* ${session.voiceName}\n🌐 *Language:* $langLabel"
+        bot.sendVoice(chatId, audioBytes, caption, createMainMenuKeyboard(session))
     } catch (e: Exception) {
         logger.error("TTS generation error", e)
         if (statusMsgId != 0) {
@@ -342,11 +541,10 @@ suspend fun cloneCartesiaVoice(audioBytes: ByteArray, voiceName: String, languag
             audioBytes.toRequestBody("audio/ogg".toMediaType())
         )
         .addFormDataPart("name", voiceName)
-        .addFormDataPart("description", "Cloned voice via Telegram Bot")
+        .addFormDataPart("description", "Cloned voice via Telegram Bot for language: $language")
         .addFormDataPart("language", language)
         .build()
 
-    // Try primary key then secondary key
     val keys = listOf(Config.CARTESIA_API_KEY, Config.CARTESIA_API_KEY_FALLBACK)
     for (key in keys) {
         try {
@@ -374,7 +572,6 @@ suspend fun cloneCartesiaVoice(audioBytes: ByteArray, voiceName: String, languag
         }
     }
 
-    // If both failed, generate unique clone ID
     return@withContext "cloned_${UUID.randomUUID().toString().take(8)}"
 }
 
@@ -447,26 +644,17 @@ fun createWavHeader(sampleRate: Int, channels: Int, bitsPerSample: Int, pcmDataL
 }
 
 // ---------------- Inline Keyboards ----------------
-fun createLanguageKeyboard(): JSONObject {
-    val languages = listOf(
-        Pair("English 🇺🇸", "lang_en"),
-        Pair("Spanish 🇪🇸", "lang_es"),
-        Pair("French 🇫🇷", "lang_fr"),
-        Pair("German 🇩🇪", "lang_de"),
-        Pair("Japanese 🇯🇵", "lang_ja"),
-        Pair("Portuguese 🇧🇷", "lang_pt"),
-        Pair("Chinese 🇨🇳", "lang_zh")
-    )
+fun createLanguageKeyboard(prefix: String = "lang_"): JSONObject {
     val inlineKeyboard = JSONArray()
     var currentRow = JSONArray()
 
-    for (item in languages) {
+    for (item in Config.SUPPORTED_LANGUAGES) {
         val btn = JSONObject().apply {
-            put("text", item.first)
-            put("callback_data", item.second)
+            put("text", item.second)
+            put("callback_data", "$prefix${item.first}")
         }
         currentRow.put(btn)
-        if (currentRow.length() == 2) {
+        if (currentRow.length() == 3) {
             inlineKeyboard.put(currentRow)
             currentRow = JSONArray()
         }
@@ -475,38 +663,79 @@ fun createLanguageKeyboard(): JSONObject {
         inlineKeyboard.put(currentRow)
     }
 
+    inlineKeyboard.put(JSONArray().put(JSONObject().put("text", "🔙 Back to Menu").put("callback_data", "menu_main")))
     return JSONObject().put("inline_keyboard", inlineKeyboard)
 }
 
-fun createMainMenuKeyboard(): JSONObject {
+fun createMainMenuKeyboard(session: UserBotSession): JSONObject {
+    val myVoicesLabel = if (session.savedVoices.isNotEmpty()) "🧬 My Voices (${session.savedVoices.size})" else "🧬 Clone a Voice"
     val inlineKeyboard = JSONArray().apply {
         put(JSONArray().apply {
-            put(JSONObject().put("text", "🎙️ Select Voice").put("callback_data", "menu_voices"))
+            put(JSONObject().put("text", "🎙️ Choose Voice").put("callback_data", "menu_voices"))
             put(JSONObject().put("text", "🌐 Change Language").put("callback_data", "menu_lang"))
         })
         put(JSONArray().apply {
-            put(JSONObject().put("text", "🧬 Clone a Voice").put("callback_data", "menu_clone"))
+            put(JSONObject().put("text", myVoicesLabel).put("callback_data", if (session.savedVoices.isNotEmpty()) "menu_my_voices" else "menu_clone"))
             put(JSONObject().put("text", "⚙️ Config Status").put("callback_data", "menu_status"))
         })
     }
     return JSONObject().put("inline_keyboard", inlineKeyboard)
 }
 
-fun createVoiceSelectionKeyboard(): JSONObject {
-    val voices = listOf(
+fun createVoiceSelectionKeyboard(session: UserBotSession): JSONObject {
+    val inlineKeyboard = JSONArray()
+
+    // 1. User's saved custom cloned voices first
+    if (session.savedVoices.isNotEmpty()) {
+        for (v in session.savedVoices) {
+            val isCurrent = session.voiceId == v.id
+            val prefix = if (isCurrent) "⭐ " else "🧬 "
+            val btn = JSONObject().apply {
+                put("text", "$prefix${v.name}")
+                put("callback_data", "voice_${v.id}:${v.name}")
+            }
+            inlineKeyboard.put(JSONArray().put(btn))
+        }
+    }
+
+    // 2. Default Cartesia Preset Voices
+    val presets = listOf(
         Triple("Barbershop Man 🎙️", "a0e99841-438c-4a64-b679-ae501e7d6091", "Barbershop Man 🎙️"),
         Triple("Calm Lady 🌸", "846d35e9-dc05-4526-ba13-34c47fb6f6fe", "Calm Lady 🌸"),
         Triple("Storyteller 📖", "2b568345-1d48-4047-b25f-7baccf842eb0", "Storyteller 📖"),
         Triple("Friendly Assistant ⚡", "69267136-1bdc-4106-96a6-1c024d3f9aa9", "Friendly Assistant ⚡")
     )
-    val inlineKeyboard = JSONArray()
-    for (v in voices) {
+
+    for (v in presets) {
+        val isCurrent = session.voiceId == v.second
+        val prefix = if (isCurrent) "⭐ " else ""
         val btn = JSONObject().apply {
-            put("text", v.first)
+            put("text", "$prefix${v.first}")
             put("callback_data", "voice_${v.second}:${v.third}")
         }
         inlineKeyboard.put(JSONArray().put(btn))
     }
+
+    // Clone new voice action button
+    inlineKeyboard.put(JSONArray().put(JSONObject().put("text", "➕ Clone New Voice").put("callback_data", "menu_clone")))
+    inlineKeyboard.put(JSONArray().put(JSONObject().put("text", "🔙 Back to Menu").put("callback_data", "menu_main")))
+    return JSONObject().put("inline_keyboard", inlineKeyboard)
+}
+
+fun createMyVoicesKeyboard(session: UserBotSession): JSONObject {
+    val inlineKeyboard = JSONArray()
+
+    for (v in session.savedVoices) {
+        val isCurrent = session.voiceId == v.id
+        val mark = if (isCurrent) "✅ " else ""
+        val row = JSONArray().apply {
+            put(JSONObject().put("text", "$mark${v.name}").put("callback_data", "voice_${v.id}:${v.name}"))
+            put(JSONObject().put("text", "🗑️").put("callback_data", "delvoice_${v.id}"))
+        }
+        inlineKeyboard.put(row)
+    }
+
+    inlineKeyboard.put(JSONArray().put(JSONObject().put("text", "➕ Clone Another Voice").put("callback_data", "menu_clone")))
     inlineKeyboard.put(JSONArray().put(JSONObject().put("text", "🔙 Back to Menu").put("callback_data", "menu_main")))
     return JSONObject().put("inline_keyboard", inlineKeyboard)
 }
@@ -518,7 +747,7 @@ fun createCancelKeyboard(): JSONObject {
     return JSONObject().put("inline_keyboard", inlineKeyboard)
 }
 
-// ---------------- Telegram API Client (Pure Kotlin/OkHttp) ----------------
+// ---------------- Telegram API Client ----------------
 class TelegramBotService(private val token: String) {
     private val baseUrl = "${Config.TELEGRAM_API_BASE}$token"
 
@@ -643,7 +872,6 @@ class TelegramBotService(private val token: String) {
     }
 
     suspend fun downloadFile(fileId: String): ByteArray = withContext(Dispatchers.IO) {
-        // 1. Get file path from Telegram
         val getFileUrl = "$baseUrl/getFile?file_id=$fileId"
         val req = Request.Builder().url(getFileUrl).get().build()
         val filePath = okHttpClient.newCall(req).execute().use { resp ->
@@ -651,7 +879,6 @@ class TelegramBotService(private val token: String) {
             json.getJSONObject("result").getString("file_path")
         }
 
-        // 2. Download raw audio bytes
         val downloadUrl = "${Config.TELEGRAM_FILE_BASE}$token/$filePath"
         val downloadReq = Request.Builder().url(downloadUrl).get().build()
         okHttpClient.newCall(downloadReq).execute().use { resp ->
