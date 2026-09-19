@@ -1,48 +1,42 @@
-# Cartesia Voice Studio & Telegram Bot
+# Cartesia Voice Bot (100% Kotlin Android App)
 
-This repository contains:
-1. **Android App**: Native Android app written in Kotlin & Jetpack Compose for Cartesia Voice Generation & Voice Cloning.
-2. **Telegram Bot**: Python-based Telegram bot powered by Cartesia Sonic AI, ready to deploy 24/7 on Render.
+A 100% Kotlin and Jetpack Compose native Android application. It provides an authentic Telegram Bot chat experience with Cartesia Sonic Text-to-Speech (TTS) and Voice Cloning, built natively without Python or external backend scripts.
 
----
+## 📱 Features
 
-## 📱 1. Android App (Kotlin + Jetpack Compose)
-
-### Features:
-- 🌐 Multi-language selection (English, Spanish, French, German, Japanese, Chinese, Portuguese)
-- 🎙️ Text-to-Speech generation powered by Cartesia Sonic API (`sk_car_x62gquQgEdVchAVtPCxcue`)
-- 🧬 Voice Cloning with built-in voice recorder & sample creator
-- 🎧 Telegram-styled interactive chat UI with animated audio waves, speed controls (1x, 1.25x, 1.5x, 2x), and seeking
-
-### Build with Android Studio:
-1. Open this folder in **Android Studio**.
-2. Sync Gradle and build the app.
-3. Run on an Android device or emulator.
-
-### Build APK via GitHub Actions (Automatic):
-- Whenever you push to `main` or `master`, GitHub Actions will automatically compile the Android APK.
-- Go to the **Actions** tab on your GitHub repository.
-- Click on the latest workflow run -> download the generated **`cartesia-voice-bot-debug-apk`** directly to your phone!
-- You can also run it manually anytime from GitHub Actions using the **Run workflow** button.
+- **100% Pure Kotlin & Jetpack Compose**: Pure native Android project.
+- **Telegram Bot Chat Experience**:
+  - Interactive bot conversation flow (starts with language selection chips/buttons)
+  - Inline bot buttons for quick actions (Voice Selection, Voice Cloning, Help)
+  - Telegram-themed message bubbles with timestamps and read receipts
+- **Cartesia Sonic TTS**:
+  - Direct integration with Cartesia Sonic API (`sk_car_x62gquQgEdVchAVtPCxcue`)
+  - Multi-language support (English, Spanish, French, German, Japanese, Portuguese, Chinese)
+  - Voice selection among top expressive voices
+- **Voice Cloning Studio**:
+  - Record audio samples directly inside the app with the microphone
+  - Clone voice in seconds using Cartesia Voice Cloning endpoint
+  - Instantly switch to your newly cloned voice
+- **Integrated Audio Player**:
+  - Waveform visualizer
+  - Playback speed control (1.0x, 1.25x, 1.5x, 2.0x)
+  - Progress scrubbing and seeking
 
 ---
 
-## 🤖 2. Telegram Bot (Deploy to Render)
+## 🚀 Building the APK via GitHub Actions
 
-The Telegram bot is located in `telegram_bot/`.
+This repository includes a pre-configured GitHub Actions workflow in `.github/workflows/android-build.yml`.
 
-### Deployment to Render in 3 Steps:
-1. Push this repository to **GitHub**.
-2. Go to **[dashboard.render.com](https://dashboard.render.com)** -> **New** -> **Blueprint**.
-3. Select this GitHub repository.
-4. Set your `TELEGRAM_BOT_TOKEN` (get it from [@BotFather](https://t.me/BotFather)).
-5. Click **Apply**. Render will automatically launch the worker!
-
-### Local Run:
-```bash
-cd telegram_bot
-pip install -r requirements.txt
-export TELEGRAM_BOT_TOKEN="your_telegram_bot_token"
-export CARTESIA_API_KEY="sk_car_x62gquQgEdVchAVtPCxcue"
-python bot.py
-```
+1. Push this repository to your GitHub account:
+   ```bash
+   git init
+   git add .
+   git commit -m "Pure Kotlin Android App"
+   git branch -M main
+   git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPOSITORY.git
+   git push -u origin main
+   ```
+2. Navigate to the **Actions** tab on your GitHub repository.
+3. Click on the **Build & Release Android APK** workflow (or click **Run workflow**).
+4. When the build completes, download the **`cartesia-voice-bot-debug-apk`** artifact to get your ready-to-install `.apk` file!
