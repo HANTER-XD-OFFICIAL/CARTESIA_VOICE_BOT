@@ -19,6 +19,12 @@ This repository contains:
 2. Sync Gradle and build the app.
 3. Run on an Android device or emulator.
 
+### Build APK via GitHub Actions (Automatic):
+- Whenever you push to `main` or `master`, GitHub Actions will automatically compile the Android APK.
+- Go to the **Actions** tab on your GitHub repository.
+- Click on the latest workflow run -> download the generated **`cartesia-voice-bot-debug-apk`** directly to your phone!
+- You can also run it manually anytime from GitHub Actions using the **Run workflow** button.
+
 ---
 
 ## 🤖 2. Telegram Bot (Deploy to Render)
