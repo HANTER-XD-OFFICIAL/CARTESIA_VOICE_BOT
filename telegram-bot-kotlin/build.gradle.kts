@@ -1,5 +1,5 @@
 plugins {
-    kotlin("jvm")
+    kotlin("jvm") version "2.1.10"
     application
 }
 
@@ -10,7 +10,7 @@ dependencies {
     // Kotlin Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
 
-    // OkHttp & Okio for HTTP network calls to Telegram API & Cartesia Voice API
+    // OkHttp & Okio for Telegram & Cartesia APIs
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okio:okio:3.9.0")
 
@@ -34,7 +34,7 @@ tasks.jar {
     manifest {
         attributes["Main-Class"] = "com.example.telegrambot.MainKt"
     }
-    // Fat JAR (all dependencies included) for simple Render / Docker deployment
+    // Fat JAR with all runtime dependencies
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     from(configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) })
 }
