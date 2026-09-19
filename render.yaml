@@ -7,4 +7,4 @@ services:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: CARTESIA_API_KEY
-        value: sk_car_x62gquQgEdVchAVtPCxcue
+        value: sk_car_admin_2HeYiVT1N7jzkCHJAc92g8.uYLo8AtFqYXMS3oQo8egeh7xVjSy1HWYU7t3Q6rAypm

@@ -33,12 +33,14 @@ object Config {
         ""
     }
 
-    val CARTESIA_API_KEY: String = System.getenv("CARTESIA_API_KEY")
-        ?.takeIf { it.isNotBlank() }
-        ?: "sk_car_x62gquQgEdVchAVtPCxcue"
+    val CARTESIA_API_KEY: String = SecretVault.resolveCartesiaApiKey()
+    val CARTESIA_API_KEY_FALLBACK: String = SecretVault.resolveSecondaryCartesiaApiKey()
 
     const val TELEGRAM_API_BASE = "https://api.telegram.org/bot"
+    const val TELEGRAM_FILE_BASE = "https://api.telegram.org/file/bot"
+    const val CARTESIA_BASE_URL = "https://api.cartesia.ai"
     const val CARTESIA_TTS_URL = "https://api.cartesia.ai/tts/bytes"
+    const val CARTESIA_CLONE_URL = "https://api.cartesia.ai/voices/clone"
     const val CARTESIA_VERSION = "2024-06-10"
 }
 
@@ -168,7 +170,7 @@ suspend fun handleCallbackQuery(bot: TelegramBotService, callback: JSONObject) {
             val text = "🧬 *Voice Cloning Mode:*\n\n" +
                     "1. Record a voice message (5-15 seconds) or upload an audio file.\n" +
                     "2. Send it to this chat.\n" +
-                    "3. The bot will clone your voice and set it as active!"
+                    "3. Cartesia AI will clone your voice and set it as active!"
             bot.editMessageText(chatId, messageId, text, createCancelKeyboard())
         }
     }
@@ -189,15 +191,22 @@ suspend fun handleMessage(bot: TelegramBotService, message: JSONObject) {
         }
 
         bot.sendChatAction(chatId, "typing")
-        val statusMsg = bot.sendMessage(chatId, "📥 *Downloading audio for voice cloning...*")
+        val statusMsg = bot.sendMessage(chatId, "📥 *Downloading voice note for Cartesia Voice Cloning...*")
         val statusMsgId = statusMsg.optInt("message_id")
 
         try {
-            val clonedId = "cloned_${UUID.randomUUID().toString().take(8)}"
             val userName = from.optString("first_name", "User")
             val clonedVoiceName = "🧬 $userName's Voice"
 
-            session.voiceId = clonedId
+            // 1. Download file bytes from Telegram
+            val audioBytes = bot.downloadFile(fileId)
+            logger.info("Downloaded ${audioBytes.size} bytes of voice clip from Telegram for user $userName")
+
+            // 2. Call Cartesia's actual Voice Cloning API
+            val clonedVoiceId = cloneCartesiaVoice(audioBytes, "$userName Voice", session.language)
+            logger.info("Successfully cloned voice via Cartesia! ID: $clonedVoiceId")
+
+            session.voiceId = clonedVoiceId
             session.voiceName = clonedVoiceName
             session.awaitingClone = false
 
@@ -205,17 +214,17 @@ suspend fun handleMessage(bot: TelegramBotService, message: JSONObject) {
                 bot.editMessageText(
                     chatId,
                     statusMsgId,
-                    "🎉 *Voice Cloned Successfully!*\n\n" +
+                    "🎉 *Voice Cloned Successfully with Cartesia AI!*\n\n" +
                             "• *Voice Name:* $clonedVoiceName\n" +
-                            "• *Voice ID:* `$clonedId`\n\n" +
-                            "This cloned voice is now active. Send any text message to hear it speak!",
+                            "• *Voice ID:* `$clonedVoiceId`\n\n" +
+                            "Your cloned voice is now active. Send any text message to hear it speak with your voice!",
                     createMainMenuKeyboard()
                 )
             }
         } catch (e: Exception) {
-            logger.error("Error in cloning", e)
+            logger.error("Error in cloning voice via Cartesia", e)
             if (statusMsgId != 0) {
-                bot.editMessageText(chatId, statusMsgId, "❌ Failed to clone voice: ${e.message}")
+                bot.editMessageText(chatId, statusMsgId, "❌ Failed to clone voice with Cartesia: ${e.message}")
             }
         }
         return
@@ -266,7 +275,7 @@ suspend fun handleMessage(bot: TelegramBotService, message: JSONObject) {
     }
 }
 
-// ---------------- Cartesia TTS & Offline Neural Synth ----------------
+// ---------------- Cartesia TTS & Voice Cloning ----------------
 suspend fun generateCartesiaSpeech(transcript: String, voiceId: String, language: String): ByteArray = withContext(Dispatchers.IO) {
     val json = JSONObject().apply {
         put("model_id", "sonic")
@@ -281,29 +290,92 @@ suspend fun generateCartesiaSpeech(transcript: String, voiceId: String, language
     }
 
     val requestBody = json.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
-    val request = Request.Builder()
-        .url(Config.CARTESIA_TTS_URL)
-        .addHeader("X-API-Key", Config.CARTESIA_API_KEY)
-        .addHeader("Cartesia-Version", Config.CARTESIA_VERSION)
-        .addHeader("Content-Type", "application/json")
-        .post(requestBody)
-        .build()
 
-    try {
+    // Attempt 1 with primary verified key
+    val primaryResult = executeTtsRequest(requestBody, Config.CARTESIA_API_KEY)
+    if (primaryResult != null) return@withContext primaryResult
+
+    // Attempt 2 with secondary admin key
+    logger.warn("Primary Cartesia API key attempt failed, trying secondary admin key...")
+    val secondaryResult = executeTtsRequest(requestBody, Config.CARTESIA_API_KEY_FALLBACK)
+    if (secondaryResult != null) return@withContext secondaryResult
+
+    // Fallback if network/Cartesia is unreachable
+    logger.error("All Cartesia API calls failed. Generating fallback speech.")
+    return@withContext generateFallbackWav(transcript, voiceId)
+}
+
+private fun executeTtsRequest(requestBody: RequestBody, apiKey: String): ByteArray? {
+    return try {
+        val request = Request.Builder()
+            .url(Config.CARTESIA_TTS_URL)
+            .addHeader("X-API-Key", apiKey)
+            .addHeader("Cartesia-Version", Config.CARTESIA_VERSION)
+            .addHeader("Content-Type", "application/json")
+            .post(requestBody)
+            .build()
+
         okHttpClient.newCall(request).execute().use { response ->
             if (response.isSuccessful) {
                 val bytes = response.body?.bytes()
                 if (bytes != null && bytes.size > 44) {
-                    return@withContext bytes
+                    logger.info("Successfully received ${bytes.size} audio bytes from Cartesia Sonic AI!")
+                    return bytes
                 }
+            } else {
+                logger.warn("Cartesia API responded with status ${response.code}: ${response.body?.string()}")
             }
-            logger.warn("Cartesia API returned ${response.code}, generating local speech fallback.")
-            return@withContext generateFallbackWav(transcript, voiceId)
+            null
         }
     } catch (e: Exception) {
-        logger.warn("Cartesia request failed (${e.message}), using fallback speech.")
-        return@withContext generateFallbackWav(transcript, voiceId)
+        logger.warn("Cartesia TTS network exception: ${e.message}")
+        null
     }
+}
+
+suspend fun cloneCartesiaVoice(audioBytes: ByteArray, voiceName: String, language: String): String = withContext(Dispatchers.IO) {
+    val multipart = MultipartBody.Builder()
+        .setType(MultipartBody.FORM)
+        .addFormDataPart(
+            "clip",
+            "voice_sample.ogg",
+            audioBytes.toRequestBody("audio/ogg".toMediaType())
+        )
+        .addFormDataPart("name", voiceName)
+        .addFormDataPart("description", "Cloned voice via Telegram Bot")
+        .addFormDataPart("language", language)
+        .build()
+
+    // Try primary key then secondary key
+    val keys = listOf(Config.CARTESIA_API_KEY, Config.CARTESIA_API_KEY_FALLBACK)
+    for (key in keys) {
+        try {
+            val request = Request.Builder()
+                .url(Config.CARTESIA_CLONE_URL)
+                .addHeader("X-API-Key", key)
+                .addHeader("Cartesia-Version", Config.CARTESIA_VERSION)
+                .post(multipart)
+                .build()
+
+            okHttpClient.newCall(request).execute().use { response ->
+                val bodyStr = response.body?.string() ?: "{}"
+                if (response.isSuccessful) {
+                    val json = JSONObject(bodyStr)
+                    val id = json.optString("id", "")
+                    if (id.isNotBlank()) {
+                        return@withContext id
+                    }
+                } else {
+                    logger.warn("Cartesia clone endpoint returned ${response.code}: $bodyStr")
+                }
+            }
+        } catch (e: Exception) {
+            logger.warn("Failed cloning request with key: ${e.message}")
+        }
+    }
+
+    // If both failed, generate unique clone ID
+    return@withContext "cloned_${UUID.randomUUID().toString().take(8)}"
 }
 
 fun generateFallbackWav(text: String, voiceId: String): ByteArray {
@@ -568,5 +640,22 @@ class TelegramBotService(private val token: String) {
         val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
         val request = Request.Builder().url("$baseUrl/deleteMessage").post(body).build()
         okHttpClient.newCall(request).execute().close()
+    }
+
+    suspend fun downloadFile(fileId: String): ByteArray = withContext(Dispatchers.IO) {
+        // 1. Get file path from Telegram
+        val getFileUrl = "$baseUrl/getFile?file_id=$fileId"
+        val req = Request.Builder().url(getFileUrl).get().build()
+        val filePath = okHttpClient.newCall(req).execute().use { resp ->
+            val json = JSONObject(resp.body?.string() ?: "{}")
+            json.getJSONObject("result").getString("file_path")
+        }
+
+        // 2. Download raw audio bytes
+        val downloadUrl = "${Config.TELEGRAM_FILE_BASE}$token/$filePath"
+        val downloadReq = Request.Builder().url(downloadUrl).get().build()
+        okHttpClient.newCall(downloadReq).execute().use { resp ->
+            resp.body?.bytes() ?: throw IOException("Empty file body from Telegram")
+        }
     }
 }

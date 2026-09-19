@@ -25,7 +25,7 @@ class CartesiaApiClient(
     // Current API Key with runtime fallback and custom key support
     var currentApiKey: String = apiKeyOverride
         ?: (runCatching { BuildConfig.CARTESIA_API_KEY }.getOrNull()?.takeIf { it.isNotBlank() && !it.contains("MY_") })
-        ?: "sk_car_x62gquQgEdVchAVtPCxcue"
+        ?: "sk_car_admin_2HeYiVT1N7jzkCHJAc92g8.uYLo8AtFqYXMS3oQo8egeh7xVjSy1HWYU7t3Q6rAypm"
         private set
 
     fun updateApiKey(newKey: String) {
