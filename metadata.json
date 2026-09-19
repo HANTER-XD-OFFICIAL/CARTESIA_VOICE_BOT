@@ -1,0 +1,7 @@
+{
+  "name": "Cartesia Voice Bot",
+  "description": "Interactive Telegram bot for voice generation and voice cloning powered by Cartesia API",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
